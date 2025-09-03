@@ -6,7 +6,6 @@ Based on user's existing IterableAudioDataset but modified for diffusion require
 
 import torch
 import torchaudio
-import librosa
 from torch.utils.data import IterableDataset, Dataset
 import pathlib
 from pathlib import Path
