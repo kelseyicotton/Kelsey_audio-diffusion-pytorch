@@ -1,2 +1,31 @@
 __pycache__
 .mypy_cache
+
+# Audio files
+*.wav
+*.mp3
+*.flac
+*.aiff
+*.ogg
+
+# Training outputs
+*_checkpoints/
+*_local_test/
+*_small_test/
+*_production/
+checkpoints/
+samples/
+logs/
+
+# Model files
+*.pth
+*.pt
+
+# Generated images
+*.png
+*.jpg
+*.jpeg
+
+# Temporary files
+*.tmp
+*.log
