@@ -1,17 +1,17 @@
 # Audio Diffusion Training TODO List
 
 **Project**: Audio Diffusion Model Training with PyTorch  
-**Last Updated**: 13.01.2025  
+**Last Updated**: 05.09.2025  
 **Status**: Training in progress with full monitoring
 
 ## ✅ **Completed Tasks**
 
-### [x] **Data pipeline setup** *(13.01.2025)*
+### [x] **Data pipeline setup** *(03.09.2025)*
 - I built `audio_diffusion_pytorch/dataset.py` with `DiffusionAudioDataset` and `DiffusionAudioBatchDataset` classes
 - I integrated the data pipeline into the main training script
 - **Files**: `audio_diffusion_pytorch/dataset.py`, `train_diffusion.py`
 
-### [x] **Configuration system** *(13.01.2025)*
+### [x] **Configuration system** *(03.09.2025)*
 - I created a modular INI-based config system with `DiffusionConfig` class
 - I added command-line argument support (`--config`, `--resume`, `--experiment`)
 - I fixed all multi-line comment parsing errors in config files
@@ -19,7 +19,7 @@
 - I implemented automatic directory naming with `{timestamp}_{experiment}` templates
 - **Files**: `config.ini`, `config_local_test.ini`, `config_production.ini`, `config_small_test.ini`
 
-### [x] **Training infrastructure** *(13.01.2025)*
+### [x] **Training infrastructure** *(03.09.2025)*
 - I built complete training loop with loss tracking, checkpointing, validation
 - I added gradient clipping and configurable training parameters
 - I implemented resume functionality for interrupted training
@@ -29,14 +29,14 @@
 - I diagnosed and fixed training stability issues (learning rate, gradient clipping, batch size)
 - **Files**: `train_diffusion.py`
 
-### [x] **Test data generation** *(13.01.2025)*
+### [x] **Test data generation** *(03.09.2025)*
 - I created synthetic audio generation script with 100 diverse samples
 - I generated test dataset with sine waves, chirps, noise, harmonics, AM/FM, pulse trains
 - I removed all noise-based files (14 files) for cleaner training evaluation
 - I now have 86 clean audio files with recognizable patterns
 - **Files**: `generate_test_audio.py`, `test_audio/` (86 clean files)
 
-### [x] **Codebase Cleanup for Cloud Deployment** *(13.01.2025)*
+### [x] **Codebase Cleanup for Cloud Deployment** *(03.09.2025)*
 - I removed temporary diagnostic files (`debug_audio_comparison.py`, spectrograms)
 - I cleaned Python cache directories (`__pycache__/`)
 - I standardized all config files with consistent `hop_size = 8192` and `training_audio_dir`
@@ -44,14 +44,14 @@
 - **Note**: Old checkpoint directories (20250903_*) left intact due to active 200-epoch training run
 - **Files**: All config files, codebase structure
 
-### [x] **Monitoring & Logging System** *(13.01.2025)*
+### [x] **Monitoring & Logging System** *(03.09.2025)*
 - I implemented Tensorboard integration with loss curves, audio samples, and model architecture
 - I added complete output logging to files with timestamps
 - I created organized output structure: `checkpoints/`, `samples/`, `logs/`
 - I added automatic directory naming to prevent overwrites and enable easy experiment tracking
 - **Features**: Visual monitoring, audio playback, complete session logs, automatic naming
 
-### [x] **Audio Quality & Processing Improvements** *(13.01.2025)*
+### [x] **Audio Quality & Processing Improvements** *(03.09.2025)*
 - I implemented Hann windowing in dataset processing to reduce segment boundary artifacts
 - I added advanced audio post-processing in sample generation (clamping, normalization, tanh saturation)
 - I optimized hop_size from 16384 back to 8192 for better data utilization with mixed file lengths
@@ -62,7 +62,7 @@
 
 ## 🎯 **Current Status: Training In Progress**
 
-### [🔄] **Active Training Run** *(13.01.2025)*
+### [🔄] **Active Training Run** *(03.09.2025)*
 - I'm currently running training with stability fixes applied
 - **Config**: `config_local_test.ini` with improved parameters
 - **Directory**: `20250903C_checkpoints_local_test/`
@@ -124,23 +124,40 @@
 
 ## 🎵 **Recent Improvements Made**
 
-### **Training Stability** *(13.01.2025)*:
+### **Training Stability** *(03.09.2025)*:
 - **Fixed wild loss oscillations** by reducing learning rate and tightening gradient clipping
 - **Improved sample quality** by increasing diffusion steps to 50
 - **Better gradient stability** with larger batch size
 
-### **Monitoring & Organization** *(13.01.2025)*:
+### **Monitoring & Organization** *(03.09.2025)*:
 - **Tensorboard integration** for real-time loss monitoring and audio sample playback
 - **Complete output logging** to timestamped files
 - **Automatic directory naming** to prevent overwrites and enable easy experiment tracking
 - **Clean output organization** with logical subdirectory structure
 
-### **Dataset Quality** *(13.01.2025)*:
+### **Dataset Quality** *(03.09.2025)*:
 - **Removed noise files** for clearer training evaluation
 - **86 clean patterns** (sine, chirp, harmonic, AM/FM, pulse) for meaningful learning assessment
 
+### [x] **Dataloader Organization Restructure** *(05.09.2025)*
+- I updated the dataloader to automatically look for `audio/` subfolder within specified training directory
+- I modified both `DiffusionAudioDataset` and `DiffusionAudioBatchDataset` classes to use new structure
+- I updated all config files to point to parent directories instead of direct audio folders
+- I modified `generate_test_audio.py` to create proper `training_audio/audio/` structure
+- I achieved perfect 3-way sync between local repo, GitHub, and cloud cluster using git stash/pull strategy
+- **Benefits**: Clean separation of training data from experiment outputs, organized project structure
+- **Structure**: `/path/to/project/` → automatically finds `/path/to/project/audio/` for data, saves outputs to `/path/to/project/[timestamp]_[experiment]_checkpoints/`
+- **Files**: `audio_diffusion_pytorch/dataset.py`, all config files, `generate_test_audio.py`
+
+### [x] **Cloud Repository Synchronization** *(05.09.2025)*
+- I resolved merge conflicts between manual cloud changes and GitHub repo using git stash strategy
+- I achieved perfect synchronization across local machine, GitHub, and cloud cluster
+- I verified all 6 modified files (dataset.py, all configs, generate_test_audio.py) are identical across all locations
+- **Command used**: `git stash push -m "Manual dataloader structure changes"` → `git pull origin main` → `git stash drop`
+- **Result**: "Already up to date" - perfect 3-way sync achieved
+
 ## 🚀 **Next Steps**
 
-I'm currently monitoring the stability-improved training run. Once complete, I'll evaluate the results and determine if the model is now generating recognizable patterns instead of noise.
+I'm currently monitoring the stability-improved training run. Once complete, I'll evaluate the results and determine if the model is now generating recognizable patterns instead of noise. The new dataloader structure is ready for clean, organized training runs on the cloud cluster.
 
-**Command for future runs**: `python train_diffusion.py --config config_local_test.ini --experiment "descriptive_name"` 
+**Command for future runs**: `python train_diffusion.py --config config_production.ini --experiment "erokia_full_training"` 
