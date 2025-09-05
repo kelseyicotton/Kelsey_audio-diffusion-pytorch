@@ -126,7 +126,10 @@ def make_stereo(mono_wave, stereo_type='duplicate'):
 def generate_test_audio_files(output_dir, num_files=100, sample_rate=16000):
     """Generate diverse test audio files."""
     
-    output_path = Path(output_dir)
+    # Create the base directory and audio subdirectory
+    base_path = Path(output_dir)
+    output_path = base_path / "audio"
+    base_path.mkdir(exist_ok=True)
     output_path.mkdir(exist_ok=True)
     
     print(f"🎵 Generating {num_files} test audio files...")
@@ -311,7 +314,7 @@ if __name__ == "__main__":
     print("🎵 Synthetic Audio Generator for Training Pipeline Test")
     
     # Generate test audio files
-    output_dir = generate_test_audio_files("test_audio", num_files=100)
+    output_dir = generate_test_audio_files("training_audio", num_files=100)
     
     # Create matching config file
     create_local_test_config()

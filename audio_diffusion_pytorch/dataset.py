@@ -6,6 +6,7 @@ Based on user's existing IterableAudioDataset but modified for diffusion require
 
 import torch
 import torchaudio
+# import librosa
 from torch.utils.data import IterableDataset, Dataset
 import pathlib
 from pathlib import Path
@@ -45,9 +46,19 @@ class DiffusionAudioDataset(IterableDataset):
         self.use_windowing = use_windowing
 
         if isinstance(audio_folder, pathlib.PurePath):
-            self.audio_folder = audio_folder
+            self.base_folder = audio_folder
         else: 
-            self.audio_folder = Path(audio_folder)
+            self.base_folder = Path(audio_folder)
+
+        # Look for 'audio' subfolder within the specified directory
+        self.audio_folder = self.base_folder / "audio"
+        
+        # Verify the audio subfolder exists
+        if not self.audio_folder.exists():
+            raise FileNotFoundError(f"Audio subfolder not found: {self.audio_folder}")
+        
+        print(f"🎵 Using audio data from: {self.audio_folder}")
+        print(f"📂 Training outputs will save to: {self.base_folder}")
 
         # Support multiple audio formats
         audio_extensions = ['*.wav', '*.mp3', '*.flac', '*.m4a']
@@ -165,11 +176,26 @@ class DiffusionAudioBatchDataset(Dataset):
         # Load all audio files into memory
         self.segments = []
         
-        audio_folder = Path(audio_folder)
+        # Handle base folder and look for 'audio' subfolder
+        if isinstance(audio_folder, pathlib.PurePath):
+            self.base_folder = audio_folder
+        else: 
+            self.base_folder = Path(audio_folder)
+
+        # Look for 'audio' subfolder within the specified directory
+        self.audio_folder = self.base_folder / "audio"
+        
+        # Verify the audio subfolder exists
+        if not self.audio_folder.exists():
+            raise FileNotFoundError(f"Audio subfolder not found: {self.audio_folder}")
+        
+        print(f"🎵 Using audio data from: {self.audio_folder}")
+        print(f"📂 Training outputs will save to: {self.base_folder}")
+        
         audio_extensions = ['*.wav', '*.mp3', '*.flac', '*.m4a']
         audio_files = []
         for ext in audio_extensions:
-            audio_files.extend(list(audio_folder.glob(ext)))
+            audio_files.extend(list(self.audio_folder.glob(ext)))
         
         if max_files:
             audio_files = audio_files[:max_files]
