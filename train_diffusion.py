@@ -20,6 +20,10 @@ import argparse
 import logging
 import sys
 from datetime import datetime
+import warnings
+warnings.filterwarnings("ignore", message=".*TorchCodec.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*StreamingMediaDecoder.*", category=UserWarning)
+warnings.filterwarnings("ignore", module="torchaudio")
 
 from audio_diffusion_pytorch import DiffusionModel, UNetV0, VDiffusion, VSampler
 from audio_diffusion_pytorch.dataset import create_diffusion_dataloader
