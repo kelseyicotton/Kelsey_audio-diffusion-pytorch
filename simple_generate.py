@@ -75,13 +75,20 @@ def load_model_from_checkpoint(checkpoint_path: str, device: torch.device) -> tu
     """Load a DiffusionModel and its saved state from a training checkpoint (.pth).
     Returns (model, meta) where meta contains useful fields like sample_rate.
     """
-    # Handle checkpoints saved on Unix that pickle pathlib.PosixPath
+    # Handle checkpoints saved on Unix/Windows that pickle pathlib path types cross-platform
     import pathlib
-    if hasattr(pathlib, 'PosixPath') and hasattr(pathlib, 'WindowsPath'):
-        try:
-            pathlib.PosixPath = pathlib.WindowsPath  # type: ignore
-        except Exception:
-            pass
+    import os as _os
+    try:
+        if _os.name == 'nt':
+            # Loading Unix-saved checkpoints on Windows
+            if hasattr(pathlib, 'PosixPath') and hasattr(pathlib, 'WindowsPath'):
+                pathlib.PosixPath = pathlib.WindowsPath  # type: ignore
+        else:
+            # Loading Windows-saved checkpoints on Linux/macOS
+            if hasattr(pathlib, 'WindowsPath') and hasattr(pathlib, 'PosixPath'):
+                pathlib.WindowsPath = pathlib.PosixPath  # type: ignore
+    except Exception:
+        pass
 
     # Explicitly set weights_only to False; we need the full dict (epoch, optimizer, etc.)
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
