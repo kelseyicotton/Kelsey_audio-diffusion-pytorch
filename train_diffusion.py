@@ -292,6 +292,11 @@ class DiffusionTrainer:
             context_channels=context_channels,
         )
         self.model.net = net_ctx.to(self.device)
+        # Ensure diffusion and sampler use the same context-aware net
+        if hasattr(self.model, 'diffusion') and hasattr(self.model.diffusion, 'net'):
+            self.model.diffusion.net = self.model.net
+        if hasattr(self.model, 'sampler') and hasattr(self.model.sampler, 'net'):
+            self.model.sampler.net = self.model.net
 
         # Create feature extractor and conditioning adapter (PEFT-lite: train adapter only)
         self.feature_extractor = FeatureExtractor(sample_rate=self.config.sampling_rate)
