@@ -123,3 +123,70 @@ def upsample(waveforms: Tensor, factor: int, **kwargs) -> Tensor:
 def randn_like(tensor: Tensor, *args, generator: Optional[Generator] = None, **kwargs):
     """randn_like that supports generator"""
     return torch.randn(tensor.shape, *args, generator=generator, **kwargs).to(tensor)
+
+# LoRA utilities for lightweight fine-tuning on Conv1d layers
+from torch import nn  # placed after initial imports to avoid reordering large header
+
+
+class LoRAConv1d(nn.Module):
+    """
+    Parallel LoRA adapter for Conv1d: y = Conv(x) + scale * B(A(x))
+    - A: 1x1 conv reduces channels to rank
+    - B: 1x1 conv expands back to out_channels
+    The base conv is frozen; only A and B are trainable.
+    """
+
+    def __init__(self, base_conv: nn.Conv1d, rank: int = 8, alpha: int = 8):
+        super().__init__()
+        assert isinstance(base_conv, nn.Conv1d), "LoRAConv1d expects nn.Conv1d"
+        self.base = base_conv
+        for p in self.base.parameters():
+            p.requires_grad = False
+
+        in_channels = base_conv.in_channels
+        out_channels = base_conv.out_channels
+        self.rank = max(int(rank), 1)
+        self.scale = float(alpha) / float(self.rank)
+
+        # 1x1 convs for LoRA path
+        self.lora_down = nn.Conv1d(in_channels, self.rank, kernel_size=1, bias=False)
+        self.lora_up = nn.Conv1d(self.rank, out_channels, kernel_size=1, bias=False)
+
+        # Initialization: down ~ small normal, up = zeros so initial delta ~ 0
+        nn.init.normal_(self.lora_down.weight, mean=0.0, std=1e-4)
+        nn.init.zeros_(self.lora_up.weight)
+
+    def forward(self, x: Tensor) -> Tensor:
+        y = self.base(x)
+        y = y + self.scale * self.lora_up(self.lora_down(x))
+        return y
+
+
+def inject_lora(module: nn.Module, rank: int = 8, alpha: int = 8, predicate: Optional[Callable[[str, nn.Module], bool]] = None) -> list:
+    """
+    Recursively replace eligible nn.Conv1d layers with LoRAConv1d.
+    - predicate(name, submodule) -> bool can limit which layers are adapted.
+    - Returns list of LoRA parameter tensors for optimizer grouping.
+    """
+    lora_params: list = []
+
+    def default_pred(name: str, m: nn.Module) -> bool:
+        # Adapt only 1D convs with kernel_size >= 3 by default (skip many 1x1 utility convs)
+        if isinstance(m, nn.Conv1d):
+            k = m.kernel_size[0]
+            return k >= 3
+        return False
+
+    use_pred = predicate or default_pred
+
+    for name, child in list(module.named_children()):
+        if isinstance(child, nn.Conv1d) and use_pred(name, child):
+            wrapped = LoRAConv1d(child, rank=rank, alpha=alpha)
+            setattr(module, name, wrapped)
+            # collect LoRA params
+            lora_params.extend(list(wrapped.lora_down.parameters()))
+            lora_params.extend(list(wrapped.lora_up.parameters()))
+        else:
+            lora_params.extend(inject_lora(child, rank=rank, alpha=alpha, predicate=use_pred))
+
+    return lora_params

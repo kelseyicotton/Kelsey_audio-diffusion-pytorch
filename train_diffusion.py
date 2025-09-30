@@ -27,6 +27,7 @@ warnings.filterwarnings("ignore", module="torchaudio")
 
 from audio_diffusion_pytorch import DiffusionModel, UNetV0, VDiffusion, VSampler
 from audio_diffusion_pytorch.dataset import create_diffusion_dataloader
+from audio_diffusion_pytorch.utils import inject_lora  # LoRA injection
 import torchaudio
 
 class TeeOutput:
@@ -268,6 +269,14 @@ class DiffusionTrainer:
         print("🎵 Initializing diffusion model...")
         self.model = DiffusionModel(**config.get_model_config()).to(self.device)
         
+        # Inject LoRA adapters into selected Conv1d layers for PEFT
+        lora_params = inject_lora(self.model, rank=4, alpha=8)
+        # Freeze all base params; LoRA params remain trainable
+        for p in self.model.parameters():
+            p.requires_grad = False
+        for p in lora_params:
+            p.requires_grad = True
+        
         # Count parameters
         total_params = sum(p.numel() for p in self.model.parameters())
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -285,7 +294,8 @@ class DiffusionTrainer:
         
         # Initialize optimizer
         if config.optimizer_name == 'AdamW':
-            self.optimizer = optim.AdamW(self.model.parameters(), lr=config.learning_rate)
+            params = lora_params if len(lora_params) > 0 else list(self.model.parameters())
+            self.optimizer = optim.AdamW(params, lr=config.learning_rate)
         else:
             raise ValueError(f"Unknown optimizer: {config.optimizer_name}")
         
