@@ -310,10 +310,11 @@ class DiffusionTrainer:
         """)
         
         # Freeze UNet weights (PEFT-lite)
-        self.model.requires_grad_(False)
-        # Safety check: ensure base model has zero trainable params
-        base_trainable_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        assert base_trainable_count == 0, f"Expected 0 trainable base params, got {base_trainable_count}"
+        for p in self.model.net.parameters():
+            p.requires_grad = False
+        # Safety check: ensure base UNet has zero trainable params
+        base_trainable_count = sum(p.numel() for p in self.model.net.parameters() if p.requires_grad)
+        assert base_trainable_count == 0, f"Expected 0 trainable base UNet params, got {base_trainable_count}"
         
         # Count parameters AFTER freezing base, then print
         total_params = sum(p.numel() for p in self.model.parameters()) + sum(p.numel() for p in self.adapter.parameters())
