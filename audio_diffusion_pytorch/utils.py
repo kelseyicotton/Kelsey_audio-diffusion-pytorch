@@ -131,8 +131,8 @@ from torch import nn  # placed after initial imports to avoid reordering large h
 class LoRAConv1d(nn.Module):
     """
     Parallel LoRA adapter for Conv1d: y = Conv(x) + scale * B(A(x))
-    - A: 1x1 conv reduces channels to rank
-    - B: 1x1 conv expands back to out_channels
+    - A (lora_down): Conv1d matching base temporal params to preserve length
+    - B (lora_up): 1x1 Conv1d to mix back to out_channels
     The base conv is frozen; only A and B are trainable.
     """
 
@@ -148,8 +148,19 @@ class LoRAConv1d(nn.Module):
         self.rank = max(int(rank), 1)
         self.scale = float(alpha) / float(self.rank)
 
-        # 1x1 convs for LoRA path
-        self.lora_down = nn.Conv1d(in_channels, self.rank, kernel_size=1, bias=False)
+        padding_mode = getattr(base_conv, 'padding_mode', 'zeros')
+        # Down path matches temporal behavior of base conv to keep same length
+        self.lora_down = nn.Conv1d(
+            in_channels,
+            self.rank,
+            kernel_size=base_conv.kernel_size,
+            stride=base_conv.stride,
+            padding=base_conv.padding,
+            dilation=base_conv.dilation,
+            bias=False,
+            padding_mode=padding_mode,
+        )
+        # Up path is 1x1 to mix channels only (no temporal change)
         self.lora_up = nn.Conv1d(self.rank, out_channels, kernel_size=1, bias=False)
 
         # Initialization: down ~ small normal, up = zeros so initial delta ~ 0
@@ -171,10 +182,10 @@ def inject_lora(module: nn.Module, rank: int = 8, alpha: int = 8, predicate: Opt
     lora_params: list = []
 
     def default_pred(name: str, m: nn.Module) -> bool:
-        # Adapt only 1D convs with kernel_size >= 3 by default (skip many 1x1 utility convs)
+        # Adapt only 1D convs with kernel_size >= 3 and groups == 1
         if isinstance(m, nn.Conv1d):
             k = m.kernel_size[0]
-            return k >= 3
+            return (k >= 3) and (m.groups == 1)
         return False
 
     use_pred = predicate or default_pred
@@ -182,6 +193,10 @@ def inject_lora(module: nn.Module, rank: int = 8, alpha: int = 8, predicate: Opt
     for name, child in list(module.named_children()):
         if isinstance(child, nn.Conv1d) and use_pred(name, child):
             wrapped = LoRAConv1d(child, rank=rank, alpha=alpha)
+            # Move LoRA params to match base conv device/dtype
+            device = child.weight.device
+            dtype = child.weight.dtype
+            wrapped = wrapped.to(device=device, dtype=dtype)
             setattr(module, name, wrapped)
             # collect LoRA params
             lora_params.extend(list(wrapped.lora_down.parameters()))
