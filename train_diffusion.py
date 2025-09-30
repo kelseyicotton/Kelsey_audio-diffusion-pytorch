@@ -437,8 +437,12 @@ class DiffusionTrainer:
             for i in range(self.config.num_samples_per_epoch):
                 # Generate sample
                 noise = torch.randn(1, self.config.channels, self.config.segment_length).to(self.device)
-                # Provide a dummy channels list (all None) for context-aware UNet
+                # Build channels list with zero context at inject depth (shape [B, ctx_dim, T_b])
                 channels_list = [None] * len(self.config.model_channels)
+                down = prod(self.config.factors[: self.inject_depth + 1])
+                Tb = max(1, self.config.segment_length // down)
+                zero_ctx = torch.zeros((1, self.ctx_dim, Tb), device=self.device, dtype=noise.dtype)
+                channels_list[self.inject_depth] = zero_ctx
                 sample = self.model.sample(noise, num_steps=self.config.sample_steps, channels=channels_list)
                 
                 # Better audio post-processing to reduce crackling

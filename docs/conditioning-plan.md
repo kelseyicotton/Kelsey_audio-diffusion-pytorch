@@ -39,4 +39,20 @@
 ## Immediate Next Steps
 1. Implement `FeatureExtractor` (F0 + simple spectral/noise features).
 2. Implement `ConditioningAdapter` (MLP) and bottleneck wiring.
-3. Add training flag to freeze base UNet and train adapter only. 
+3. Add training flag to freeze base UNet and train adapter only.
+
+## Implementation notes (this branch)
+- Bottleneck context wiring:
+  - Set `inject_depth = len(channels) // 2` and `ctx_dim = 32`.
+  - Built `context_channels` with `ctx_dim` at `inject_depth`; replaced the model’s UNet with a context-aware `UNetV0`.
+  - Synchronized `self.model.diffusion.net` and `self.model.sampler.net` to the same UNet.
+- Adapter and features:
+  - Added `audio_diffusion_pytorch/conditioning.py` with `FeatureExtractor` (proxy features) and `ConditioningAdapter`.
+  - In training, compute features → adapter → interpolate to bottleneck length → pass via `channels` only at `inject_depth`.
+- PEFT-lite freeze and optimizer:
+  - Froze base UNet parameters; trained only the adapter (confirmed Base trainable: 0; Adapter trainable: ~4.6k).
+  - Optimizer set to `AdamW` over adapter params only.
+- Sampling fix:
+  - During monitoring, provided a zero context tensor at the bottleneck (`[B, ctx_dim, T_b]`) so sampling works with the context-aware UNet.
+- Logs and verification:
+  - Added prints to confirm inject depth, ctx dim, and trainable parameter counts after freezing. 
