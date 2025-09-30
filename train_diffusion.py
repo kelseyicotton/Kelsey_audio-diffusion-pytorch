@@ -24,10 +24,13 @@ import warnings
 warnings.filterwarnings("ignore", message=".*TorchCodec.*", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*StreamingMediaDecoder.*", category=UserWarning)
 warnings.filterwarnings("ignore", module="torchaudio")
-
 from audio_diffusion_pytorch import DiffusionModel, UNetV0, VDiffusion, VSampler
 from audio_diffusion_pytorch.dataset import create_diffusion_dataloader
 import torchaudio
+# Conditioning imports (used when conditioning_on=True)
+from audio_diffusion_pytorch.conditioning import FeatureExtractor, ConditioningAdapter
+from math import prod
+import torch.nn.functional as F
 
 class TeeOutput:
     """Custom class to write output to both console and file."""
@@ -81,6 +84,7 @@ class DiffusionConfig:
         self._parse_audio_config()
         self._parse_dataset_config()
         self._parse_model_config()
+        self._parse_conditioning_config()
         self._parse_training_config()
         self._parse_extra_config()
         self._parse_paths_config()
@@ -149,7 +153,25 @@ class DiffusionConfig:
             self.loss_fn = torch.nn.functional.mse_loss
         else:
             raise ValueError(f"Unknown loss_function: {loss_function}")
-    
+
+    def _parse_conditioning_config(self):
+        """Parse optional conditioning flags from [model] section."""
+        model = self.config['model']
+        getbool = lambda key, default: model.getboolean(key) if model.get(key) is not None else default
+        getint = lambda key, default: int(model.get(key)) if model.get(key) is not None else default
+        getstr = lambda key, default: model.get(key) if model.get(key) is not None else default
+        getfloat = lambda key, default: float(model.get(key)) if model.get(key) is not None else default
+        
+        self.conditioning_on = getbool('conditioning_on', True)
+        self.freeze_unet = getbool('freeze_unet', True)
+        self.ctx_dim = getint('ctx_dim', 32)
+        self.inject_depth_cfg = getstr('inject_depth', 'mid')  # 'mid' or integer as string
+        # Feature settings
+        self.feat_frame_length = getint('features.frame_length', 1024)
+        self.feat_hop_length = getint('features.hop_length', 256)
+        self.feat_fmin = getfloat('features.fmin', 50.0)
+        self.feat_fmax = getfloat('features.fmax', 1000.0)
+
     def _parse_training_config(self):
         """Parse [training] section."""
         training = self.config['training']
@@ -252,6 +274,10 @@ class DiffusionConfig:
         print(f"🖥️  Device: {self.device}")
         print(f"💾 Checkpoints: Every {self.save_every} epochs")
         print(f"🎧 Samples: Every {self.sample_every} epochs")
+        if self.conditioning_on:
+            print(f"🎛️ Conditioning: ON (ctx_dim={self.ctx_dim}, inject_depth={self.inject_depth_cfg})")
+        else:
+            print(f"🎛️ Conditioning: OFF")
 
 class DiffusionTrainer:
     """Main training class for diffusion models."""
@@ -267,27 +293,75 @@ class DiffusionTrainer:
         # Initialize model
         print("🎵 Initializing diffusion model...")
         self.model = DiffusionModel(**config.get_model_config()).to(self.device)
+
+        # If conditioning is ON, rebuild UNet with context and set up adapter
+        self.inject_depth = None
+        self.ctx_dim = None
+        self.feature_extractor = None
+        self.adapter = None
         
-        # Count parameters
-        total_params = sum(p.numel() for p in self.model.parameters())
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        print(f"📊 Model parameters: {total_params:,} total, {trainable_params:,} trainable")
-        
-        # Log model architecture to tensorboard
-        self.writer.add_text('Model/Architecture', f"""
-        **Model Type**: {config.net_t.__name__}
-        **Parameters**: {total_params:,} total, {trainable_params:,} trainable
-        **Channels**: {config.model_channels}
-        **Factors**: {config.factors}
-        **Items**: {config.items}
-        **Attentions**: {config.attentions}
-        """)
+        if self.config.conditioning_on:
+            channels = self.config.model_channels
+            factors = self.config.factors
+            # Resolve inject depth
+            if str(self.config.inject_depth_cfg).lower() == 'mid':
+                self.inject_depth = len(channels) // 2
+            else:
+                self.inject_depth = int(self.config.inject_depth_cfg)
+            self.ctx_dim = int(self.config.ctx_dim)
+            context_channels = [0] * len(channels)
+            context_channels[self.inject_depth] = self.ctx_dim
+            # Build context-aware UNet and sync references
+            net_ctx = UNetV0(
+                dim=1,
+                in_channels=self.config.in_channels,
+                channels=channels,
+                factors=factors,
+                items=self.config.items,
+                attentions=self.config.attentions,
+                attention_heads=self.config.attention_heads,
+                attention_features=self.config.attention_features,
+                context_channels=context_channels,
+            )
+            self.model.net = net_ctx.to(self.device)
+            if hasattr(self.model, 'diffusion') and hasattr(self.model.diffusion, 'net'):
+                self.model.diffusion.net = self.model.net
+            if hasattr(self.model, 'sampler') and hasattr(self.model.sampler, 'net'):
+                self.model.sampler.net = self.model.net
+            # Create features + adapter
+            self.feature_extractor = FeatureExtractor(
+                sample_rate=self.config.sampling_rate,
+                frame_length=self.config.feat_frame_length,
+                hop_length=self.config.feat_hop_length,
+                fmin=self.config.feat_fmin,
+                fmax=self.config.feat_fmax,
+            )
+            self.adapter = ConditioningAdapter(in_features=4, ctx_dim=self.ctx_dim).to(self.device)
+
+        # Parameter freezing and optimizer
+        if self.config.conditioning_on and self.config.freeze_unet:
+            for p in self.model.net.parameters():
+                p.requires_grad = False
+            params = list(self.adapter.parameters()) if self.adapter is not None else []
+        else:
+            params = list(self.model.parameters())
+            if self.adapter is not None:
+                params += list(self.adapter.parameters())
         
         # Initialize optimizer
         if config.optimizer_name == 'AdamW':
-            self.optimizer = optim.AdamW(self.model.parameters(), lr=config.learning_rate)
+            self.optimizer = optim.AdamW(params, lr=config.learning_rate)
         else:
             raise ValueError(f"Unknown optimizer: {config.optimizer_name}")
+        
+        # Log model/conditioning
+        total_params = sum(p.numel() for p in self.model.parameters()) + (sum(p.numel() for p in self.adapter.parameters()) if self.adapter is not None else 0)
+        trainable_params = sum(p.numel() for p in params)
+        print(f"📊 Model parameters: {total_params:,} total (base+adapter)")
+        print(f"   └─ Trainable: {trainable_params:,}")
+        if self.config.conditioning_on:
+            print(f"   ├─ Inject depth: {self.inject_depth}")
+            print(f"   └─ Ctx dim: {self.ctx_dim}")
         
         # Training state
         self.current_epoch = 0
@@ -391,28 +465,28 @@ class DiffusionTrainer:
             for i in range(self.config.num_samples_per_epoch):
                 # Generate sample
                 noise = torch.randn(1, self.config.channels, self.config.segment_length).to(self.device)
-                sample = self.model.sample(noise, num_steps=self.config.sample_steps)
+                if self.config.conditioning_on:
+                    channels_list = [None] * len(self.config.model_channels)
+                    down = prod(self.config.factors[: self.inject_depth + 1])
+                    Tb = max(1, self.config.segment_length // down)
+                    zero_ctx = torch.zeros((1, self.ctx_dim, Tb), device=self.device, dtype=noise.dtype)
+                    channels_list[self.inject_depth] = zero_ctx
+                    sample = self.model.sample(noise, num_steps=self.config.sample_steps, channels=channels_list)
+                else:
+                    sample = self.model.sample(noise, num_steps=self.config.sample_steps)
                 
                 # Better audio post-processing to reduce crackling
-                # 1. Clamp to reasonable range first
                 sample = torch.clamp(sample, -1.0, 1.0)
-                
-                # 2. Soft normalization to prevent harsh clipping
                 max_val = sample.abs().max()
-                if max_val > 0.1:  # Only normalize if signal is significant
-                    sample = sample / max_val * 0.7  # More conservative scaling
-                
-                # 3. Apply gentle tanh saturation to smooth harsh edges
+                if max_val > 0.1:
+                    sample = sample / max_val * 0.7
                 sample = torch.tanh(sample * 0.9) * 0.8
                 sample_path = os.path.join(
                     self.config.sample_dir, 
                     f'epoch_{epoch:03d}_sample_{i+1}.wav'
                 )
-                
                 try:
                     torchaudio.save(sample_path, sample[0].cpu(), self.config.sampling_rate)
-                    
-                    # Log audio to tensorboard (first sample only to avoid clutter)
                     if i == 0:
                         self.writer.add_audio(
                             f'Generated_Audio/Epoch_{epoch}', 
@@ -421,55 +495,54 @@ class DiffusionTrainer:
                             sample_rate=self.config.sampling_rate
                         )
                 except:
-                    # Fallback: save as numpy
                     import numpy as np
                     np.save(sample_path.replace('.wav', '.npy'), sample[0].cpu().numpy())
         
         self.model.train()
-    
+
     def train_epoch(self, dataloader, epoch):
         """Train for one epoch."""
         self.model.train()
         total_loss = 0
         num_batches = 0
         
-        # Use tqdm for progress bar
         pbar = tqdm(dataloader, desc=f'Epoch {epoch}')
         
         for batch_idx, audio_batch in enumerate(pbar):
-            # Move to device
             audio_batch = audio_batch.to(self.device)
-            
-            # Zero gradients
             self.optimizer.zero_grad()
             
-            # Forward pass (compute diffusion loss)
-            loss = self.model(audio_batch)
+            if self.config.conditioning_on:
+                with torch.no_grad():
+                    feats = self.feature_extractor(audio_batch)
+                keys = sorted(feats.keys())
+                ctx = self.adapter({k: feats[k] for k in keys})  # [B, ctx_dim, Nf]
+                down = prod(self.config.factors[: self.inject_depth + 1])
+                Tb = max(1, audio_batch.shape[-1] // down)
+                if ctx.shape[-1] != Tb:
+                    ctx = F.interpolate(ctx, size=Tb, mode="linear", align_corners=False)
+                channels_list = [None] * len(self.config.model_channels)
+                channels_list[self.inject_depth] = ctx
+                loss = self.model(audio_batch, channels=channels_list)
+            else:
+                loss = self.model(audio_batch)
             
-            # Backward pass
             loss.backward()
-            
-            # Gradient clipping if configured
             if self.config.gradient_clip > 0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip)
-            
+                torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], self.config.gradient_clip)
             self.optimizer.step()
             
-            # Track loss
             total_loss += loss.item()
             num_batches += 1
             self.global_step += 1
             
-            # Log to tensorboard every 10 steps
             if self.global_step % 10 == 0:
                 self.writer.add_scalar('Loss/Training_Step', loss.item(), self.global_step)
                 self.writer.add_scalar('Learning_Rate', self.optimizer.param_groups[0]['lr'], self.global_step)
             
-            # Update progress bar
             avg_loss = total_loss / num_batches
             pbar.set_postfix({'loss': f'{avg_loss:.4f}'})
             
-            # Break after max batches per epoch (configurable)
             if batch_idx >= self.config.max_batches_per_epoch:
                 break
         
