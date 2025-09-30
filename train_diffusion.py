@@ -300,8 +300,12 @@ class DiffusionTrainer:
 
         # Create feature extractor and conditioning adapter (PEFT-lite: train adapter only)
         self.feature_extractor = FeatureExtractor(sample_rate=self.config.sampling_rate)
-        # Using three simple proxies in stub: f0_proxy, spectral_flatness_proxy, zcr_proxy
-        self.adapter = ConditioningAdapter(in_features=3, ctx_dim=self.ctx_dim).to(self.device)
+        # Determine number of conditioning feature channels dynamically
+        with torch.no_grad():
+            dummy = torch.zeros(1, self.config.channels, self.config.segment_length, device=self.device)
+            feat_dict = self.feature_extractor(dummy)
+            in_features = len(feat_dict)
+        self.adapter = ConditioningAdapter(in_features=in_features, ctx_dim=self.ctx_dim).to(self.device)
 
         # Log model architecture to tensorboard
         self.writer.add_text('Model/Architecture', f"""
