@@ -28,6 +28,10 @@ warnings.filterwarnings("ignore", module="torchaudio")
 from audio_diffusion_pytorch import DiffusionModel, UNetV0, VDiffusion, VSampler
 from audio_diffusion_pytorch.dataset import create_diffusion_dataloader
 import torchaudio
+# Added: conditioning utilities and helpers
+from audio_diffusion_pytorch.conditioning import FeatureExtractor, ConditioningAdapter
+from math import prod
+import torch.nn.functional as F
 
 class TeeOutput:
     """Custom class to write output to both console and file."""
@@ -268,24 +272,58 @@ class DiffusionTrainer:
         print("🎵 Initializing diffusion model...")
         self.model = DiffusionModel(**config.get_model_config()).to(self.device)
         
-        # Count parameters
-        total_params = sum(p.numel() for p in self.model.parameters())
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        print(f"📊 Model parameters: {total_params:,} total, {trainable_params:,} trainable")
-        
+        # Conditioning: derive inject_depth and context_channels, rebuild UNet with context
+        channels = self.config.model_channels
+        factors = self.config.factors
+        self.inject_depth = len(channels) // 2  # bottleneck index
+        self.ctx_dim = 32
+        context_channels = [0] * len(channels)
+        context_channels[self.inject_depth] = self.ctx_dim
+
+        net_ctx = UNetV0(
+            dim=1,
+            in_channels=self.config.in_channels,
+            channels=channels,
+            factors=factors,
+            items=self.config.items,
+            attentions=self.config.attentions,
+            attention_heads=self.config.attention_heads,
+            attention_features=self.config.attention_features,
+            context_channels=context_channels,
+        )
+        self.model.net = net_ctx.to(self.device)
+
+        # Create feature extractor and conditioning adapter (PEFT-lite: train adapter only)
+        self.feature_extractor = FeatureExtractor(sample_rate=self.config.sampling_rate)
+        # Using three simple proxies in stub: f0_proxy, spectral_flatness_proxy, zcr_proxy
+        self.adapter = ConditioningAdapter(in_features=3, ctx_dim=self.ctx_dim).to(self.device)
+
+        # Count parameters (after swapping net)
+        total_params = sum(p.numel() for p in self.model.parameters()) + sum(p.numel() for p in self.adapter.parameters())
+        trainable_params_model = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        trainable_params_adapter = sum(p.numel() for p in self.adapter.parameters() if p.requires_grad)
+        print(f"📊 Model parameters: {total_params:,} total (base+adapter)")
+        print(f"   ├─ Base trainable: {trainable_params_model:,}")
+        print(f"   └─ Adapter trainable: {trainable_params_adapter:,}")
+
         # Log model architecture to tensorboard
         self.writer.add_text('Model/Architecture', f"""
         **Model Type**: {config.net_t.__name__}
-        **Parameters**: {total_params:,} total, {trainable_params:,} trainable
         **Channels**: {config.model_channels}
         **Factors**: {config.factors}
         **Items**: {config.items}
         **Attentions**: {config.attentions}
+        **Inject Depth**: {self.inject_depth}
+        **Ctx Dim**: {self.ctx_dim}
         """)
         
-        # Initialize optimizer
+        # Freeze UNet weights (PEFT-lite)
+        for p in self.model.net.parameters():
+            p.requires_grad = False
+        
+        # Initialize optimizer for adapter only
         if config.optimizer_name == 'AdamW':
-            self.optimizer = optim.AdamW(self.model.parameters(), lr=config.learning_rate)
+            self.optimizer = optim.AdamW(self.adapter.parameters(), lr=config.learning_rate)
         else:
             raise ValueError(f"Unknown optimizer: {config.optimizer_name}")
         
@@ -443,15 +481,33 @@ class DiffusionTrainer:
             # Zero gradients
             self.optimizer.zero_grad()
             
-            # Forward pass (compute diffusion loss)
-            loss = self.model(audio_batch)
+            # Build conditioning at bottleneck
+            with torch.no_grad():
+                feats = self.feature_extractor(audio_batch)  # dict of [B,1,Nf]
+            # Concatenate features in channel dimension for adapter
+            keys = sorted(feats.keys())
+            feat_cat = torch.cat([feats[k] for k in keys], dim=1)  # [B,F,Nf]
+            # Adapter expects dict; align with stub signature
+            ctx = self.adapter({k: feats[k] for k in keys})  # [B, ctx_dim, Nf]
+            
+            # Resize to bottleneck temporal length
+            down = prod(self.config.factors[: self.inject_depth + 1])
+            Tb = max(1, audio_batch.shape[-1] // down)
+            if ctx.shape[-1] != Tb:
+                ctx = F.interpolate(ctx, size=Tb, mode="linear", align_corners=False)
+            
+            channels_list = [None] * len(self.config.model_channels)
+            channels_list[self.inject_depth] = ctx
+            
+            # Forward pass (compute diffusion loss) with conditioning
+            loss = self.model(audio_batch, channels=channels_list)
             
             # Backward pass
             loss.backward()
             
             # Gradient clipping if configured
             if self.config.gradient_clip > 0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip)
+                torch.nn.utils.clip_grad_norm_(self.adapter.parameters(), self.config.gradient_clip)
             
             self.optimizer.step()
             
