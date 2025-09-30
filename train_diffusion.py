@@ -437,7 +437,9 @@ class DiffusionTrainer:
             for i in range(self.config.num_samples_per_epoch):
                 # Generate sample
                 noise = torch.randn(1, self.config.channels, self.config.segment_length).to(self.device)
-                sample = self.model.sample(noise, num_steps=self.config.sample_steps)
+                # Provide a dummy channels list (all None) for context-aware UNet
+                channels_list = [None] * len(self.config.model_channels)
+                sample = self.model.sample(noise, num_steps=self.config.sample_steps, channels=channels_list)
                 
                 # Better audio post-processing to reduce crackling
                 # 1. Clamp to reasonable range first
