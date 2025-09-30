@@ -298,14 +298,6 @@ class DiffusionTrainer:
         # Using three simple proxies in stub: f0_proxy, spectral_flatness_proxy, zcr_proxy
         self.adapter = ConditioningAdapter(in_features=3, ctx_dim=self.ctx_dim).to(self.device)
 
-        # Count parameters (after swapping net)
-        total_params = sum(p.numel() for p in self.model.parameters()) + sum(p.numel() for p in self.adapter.parameters())
-        trainable_params_model = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        trainable_params_adapter = sum(p.numel() for p in self.adapter.parameters() if p.requires_grad)
-        print(f"📊 Model parameters: {total_params:,} total (base+adapter)")
-        print(f"   ├─ Base trainable: {trainable_params_model:,}")
-        print(f"   └─ Adapter trainable: {trainable_params_adapter:,}")
-
         # Log model architecture to tensorboard
         self.writer.add_text('Model/Architecture', f"""
         **Model Type**: {config.net_t.__name__}
@@ -320,6 +312,14 @@ class DiffusionTrainer:
         # Freeze UNet weights (PEFT-lite)
         for p in self.model.net.parameters():
             p.requires_grad = False
+        
+        # Count parameters AFTER freezing base, then print
+        total_params = sum(p.numel() for p in self.model.parameters()) + sum(p.numel() for p in self.adapter.parameters())
+        trainable_params_model = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        trainable_params_adapter = sum(p.numel() for p in self.adapter.parameters() if p.requires_grad)
+        print(f"📊 Model parameters: {total_params:,} total (base+adapter)")
+        print(f"   ├─ Base trainable: {trainable_params_model:,}")
+        print(f"   └─ Adapter trainable: {trainable_params_adapter:,}")
         
         # Initialize optimizer for adapter only
         if config.optimizer_name == 'AdamW':
